@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"strings"
 	"time"
+
+	"github.com/zhamlin/http-watch/internal"
 )
 
 type config struct {
@@ -61,7 +63,7 @@ func setupSlog(level slog.Level) {
 	var logLevel slog.LevelVar
 	logLevel.Set(level)
 
-	handler := NewHandler(os.Stderr, &ColorOptions{
+	handler := internal.NewHandler(os.Stderr, &internal.ColorOptions{
 		Level:      &logLevel,
 		TimeFormat: time.DateTime,
 	})

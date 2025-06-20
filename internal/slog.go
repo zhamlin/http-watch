@@ -75,7 +75,7 @@ Color support on Windows can be added by using e.g. the [go-colorable] package.
 [go-isatty]: https://pkg.go.dev/github.com/mattn/go-isatty
 [go-colorable]: https://pkg.go.dev/github.com/mattn/go-colorable
 */
-package main
+package internal
 
 import (
 	"context"
