@@ -1,6 +1,7 @@
-package main
+package httpwatch
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,16 +13,21 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func createWatcherFn(cfg config, b *Broadcaster) (func(), error) {
-	// Create a new watcher
+type WatcherConfig struct {
+	Recursive   bool
+	Dir         string
+	FilePattern string
+}
+
+func NewWatcherFn(ctx context.Context, cfg WatcherConfig, b *Broadcaster) (func(), error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		slog.Error("Failed to create watcher", "error", err)
+		slog.ErrorContext(ctx, "Failed to create watcher", "error", err)
 		os.Exit(1)
 	}
 
 	addDir := func(path string) error {
-		if cfg.recursive {
+		if cfg.Recursive {
 			return filepath.Walk(path, func(walkPath string, info os.FileInfo, err error) error {
 				if err != nil {
 					return err
@@ -42,7 +48,7 @@ func createWatcherFn(cfg config, b *Broadcaster) (func(), error) {
 	}
 
 	// Add the initial directory to the watcher
-	if err := addDir(cfg.dir); err != nil {
+	if err := addDir(cfg.Dir); err != nil {
 		return nil, fmt.Errorf("failed adding directory to watcher: %w", err)
 	}
 
@@ -52,12 +58,12 @@ func createWatcherFn(cfg config, b *Broadcaster) (func(), error) {
 	const eventTimeout = 100 * time.Millisecond
 
 	// Compile the regex pattern
-	regex := regexp.MustCompile(cfg.pattern)
+	regex := regexp.MustCompile(cfg.FilePattern)
 
-	fullPath := cfg.dir
+	fullPath := cfg.Dir
 	if fullPath != "" {
 		var err error
-		fullPath, err = filepath.Abs(cfg.dir)
+		fullPath, err = filepath.Abs(cfg.Dir)
 		if err != nil {
 			return nil, fmt.Errorf("failed getting path: %w", err)
 		}
@@ -66,9 +72,11 @@ func createWatcherFn(cfg config, b *Broadcaster) (func(), error) {
 	return func() {
 		defer watcher.Close()
 
-		slog.Info("started watching for files", "pattern", cfg.pattern)
+		slog.InfoContext(ctx, "started watching for files", "pattern", cfg.FilePattern)
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case event, ok := <-watcher.Events:
 				if !ok {
 					return
@@ -77,7 +85,7 @@ func createWatcherFn(cfg config, b *Broadcaster) (func(), error) {
 				// Get the absolute file path for consistent handling
 				filePath, err := filepath.Abs(event.Name)
 				if err != nil {
-					slog.Error("Error getting absolute path", "error", err)
+					slog.ErrorContext(ctx, "Error getting absolute path", "error", err)
 					continue
 				}
 
@@ -93,9 +101,9 @@ func createWatcherFn(cfg config, b *Broadcaster) (func(), error) {
 				isDir := err == nil && fileInfo.IsDir()
 
 				// If a new directory is created and we're in recursive mode, watch it
-				if isDir && cfg.recursive && (event.Op&fsnotify.Create == fsnotify.Create) {
+				if isDir && cfg.Recursive && (event.Op&fsnotify.Create == fsnotify.Create) {
 					if err := addDir(filePath); err != nil {
-						slog.Error("Error adding new directory to watcher", "error", err)
+						slog.ErrorContext(ctx, "Error adding new directory to watcher", "error", err)
 					}
 					continue
 				}
@@ -112,19 +120,19 @@ func createWatcherFn(cfg config, b *Broadcaster) (func(), error) {
 				}
 
 				path := strings.ReplaceAll(filePath, fullPath, "")
-				handleEvent(event, path, b)
+				handleEvent(ctx, event, path, b)
 
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				slog.Error("watcher error", "error", err)
+				slog.ErrorContext(ctx, "watcher error", "error", err)
 			}
 		}
 	}, nil
 }
 
-func handleEvent(event fsnotify.Event, filePath string, b *Broadcaster) {
+func handleEvent(ctx context.Context, event fsnotify.Event, filePath string, b *Broadcaster) {
 	switch {
 	case event.Op&fsnotify.Create == fsnotify.Create:
 	case event.Op&fsnotify.Write == fsnotify.Write:
@@ -135,6 +143,6 @@ func handleEvent(event fsnotify.Event, filePath string, b *Broadcaster) {
 		return
 	}
 
-	slog.Debug("file changed", "file", filePath)
+	slog.DebugContext(ctx, "file changed", "file", filePath)
 	b.Broadcast(filePath)
 }

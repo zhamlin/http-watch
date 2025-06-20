@@ -1,10 +1,11 @@
-package main
+package httpwatch
 
 import (
 	"compress/gzip"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 type compressedResponseWriter struct {
@@ -16,34 +17,30 @@ func (w compressedResponseWriter) Write(b []byte) (int, error) {
 	return w.Writer.Write(b)
 }
 
-func makeGzipHandler(fn http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "gzip")
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
-		gzr := compressedResponseWriter{Writer: gz, ResponseWriter: w}
-		fn(gzr, r)
-	}
+var gzipPool = sync.Pool{
+	New: func() any {
+		return gzip.NewWriter(nil)
+	},
 }
 
-var comressionFnByName = map[string]func(http.HandlerFunc) http.HandlerFunc{
-	"gzip": makeGzipHandler,
-}
-
-func makeCompressionHandler(fn http.HandlerFunc, compresionPrefs []string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		encodingHeader := r.Header.Get("Accept-Encoding")
-		for _, compression := range compresionPrefs {
-			wantsCompressionType := strings.Contains(encodingHeader, compression)
-			if wantsCompressionType {
-				compressFn, has := comressionFnByName[compression]
-				if has {
-					compressFn(fn)(w, r)
-					return
-				}
-			}
+func newGzipHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
 		}
 
-		fn(w, r)
-	}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+
+		gz := gzipPool.Get().(*gzip.Writer)
+		gz.Reset(w)
+		defer func() {
+			_ = gz.Close()
+			gzipPool.Put(gz)
+		}()
+
+		gzr := compressedResponseWriter{Writer: gz, ResponseWriter: w}
+		next.ServeHTTP(gzr, r)
+	})
 }
